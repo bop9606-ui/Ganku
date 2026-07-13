@@ -28,8 +28,8 @@ app = Flask(__name__)
 #    LINE_CHANNEL_SECRET=你的Secret
 #    LINE_CHANNEL_ACCESS_TOKEN=你的Token
 # =========================================================
-CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET')
-CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
+CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
+CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
 
 # 設定台灣時區
 TAIWAN_TZ = pytz.timezone('Asia/Taipei')
