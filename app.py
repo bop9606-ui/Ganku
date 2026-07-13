@@ -30,16 +30,16 @@ CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN', '')
 redis = Redis.from_env()
 TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 
-# 💡 【自訂解鎖金鑰】請把後面的字串改成你想設定的密碼！
-UNLOCK_PASSWORD = "龍兄虎弟" 
+# 💡 【自訂解鎖金鑰】請確認這裡的密碼是你想設定的內容！
+UNLOCK_PASSWORD = "龍哥罩虎爺" 
 
 # =========================================================
-# 📌 2. BOSS 設定
+# 📌 2. BOSS 設定 (日後要新增 BOSS 改這裡即可)
 # =========================================================
 BOSS_COOLDOWN = {
-    "巴風特": 120,
-    "惡魔宰相": 60,
-    "地獄犬": 45,
+    "巴風特": 120,    # 2 小時
+    "惡魔宰相": 60,   # 1 小時
+    "地獄犬": 45,     # 45 分鐘
 }
 
 BOSS_ALIASES = {
@@ -78,7 +78,7 @@ def handle_message(event):
     if source_type != 'group':
         return
 
-  current_group_id = str(event.source.group_id)  # 強制轉成純字串，避免格式錯亂
+    current_group_id = str(event.source.group_id)  # 強制轉成純字串，避免格式錯亂
 
     # ---------------------------------------------------------
     # 防護機制 B：解鎖功能指令 (例如輸入: /unlock 龍哥罩虎爺)
@@ -93,7 +93,7 @@ def handle_message(event):
             reply_text = f"❌ 認證失敗：密碼錯誤。\n您輸入的密碼是：[{input_pwd}]"
         
         send_reply(event, reply_text)
-        return  # 💡 這個 return 對齊 if user_message.startswith，攔截所有解鎖訊息
+        return  # 攔截所有解鎖訊息
 
     # ---------------------------------------------------------
     # 防護機制 C：檢查目前群組是否已解鎖
@@ -112,7 +112,7 @@ def handle_message(event):
         if user_message.lower().startswith('/z ') or user_message.lower() == 'kb':
             reply_text = f"🔒 本群組尚未授權啟用。\n請聯繫管理員輸入解鎖指令。\n當前群組ID: {current_group_id}"
             send_reply(event, reply_text)
-        return  # 💡 這個 return 對齊 if not is_allowed，只要沒解鎖一律在此攔截切斷
+        return  # 只要沒解鎖一律在此攔截切斷
 
     # =========================================================
     # ➔ 以下為原本的王墓功能 (只有通過檢查的群組才能執行到這)
@@ -148,8 +148,7 @@ def handle_message(event):
                 cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
                 next_spawn_time = death_time + timedelta(minutes=cooldown_min)
                 
-                # 💡 修改：為了區分不同群組的王表，Redis 的 Hash Key 加上群組 ID
-                # 這樣群組 A 和群組 B 就算存同一隻王，時間也不會互蓋！
+                # Redis 鍵名加上群組 ID，實現多群組數據獨立隔離
                 redis_key = f"boss_timer:{current_group_id}"
                 redis.hset(redis_key, real_name, next_spawn_time.isoformat())
                 
@@ -168,7 +167,7 @@ def handle_message(event):
         all_records = redis.hgetall(redis_key)
         
         if not all_records:
-            reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
+            reply_text = "📋 目前沒有 any BOSS 的死亡紀錄喔！"
         else:
             date_groups = defaultdict(list)
             boss_list_to_sort = []
