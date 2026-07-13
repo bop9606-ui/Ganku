@@ -78,36 +78,43 @@ def handle_message(event):
     if source_type != 'group':
         return
 
-    current_group_id = event.source.group_id
+  current_group_id = str(event.source.group_id)  # 💡 強制轉成純字串，避免格式錯亂
 
     # ---------------------------------------------------------
-    # 防護機制 B：解鎖功能指令 (例如輸入: /unlock 天王蓋地虎)
+    # 防護機制 B：解鎖功能指令
     # ---------------------------------------------------------
     if user_message.startswith('/unlock '):
         input_pwd = user_message[8:].strip()
         if input_pwd == UNLOCK_PASSWORD:
-            # 將群組 ID 存入 Redis 的集合 (Set) 中，名稱叫 'allowed_groups'
+            # 將群組 ID 存入 Redis
             redis.sadd('allowed_groups', current_group_id)
-            reply_text = "🔓 【系統通知】此群組已成功解鎖！本機器人即刻起將為您提供王墓計時服務。"
+            # 💡 修改：加上這句，確認密碼成功時，順便在 LINE 秀出解鎖的 ID 是什麼
+            reply_text = f"🔓 【系統通知】此群組已成功解鎖！\nID: {current_group_id}"
         else:
-            reply_text = "❌ 認證失敗：密碼錯誤，拒絕存取。"
+            # 💡 修改：如果密碼錯了，也回覆具體訊息，方便看是不是少打了空格
+            reply_text = f"❌ 認證失敗：密碼錯誤。\n您輸入的密碼是：[{input_pwd}]"
         
-        # 發送解鎖結果並結束
         send_reply(event, reply_text)
         return
 
     # ---------------------------------------------------------
     # 防護機制 C：檢查目前群組是否已解鎖
     # ---------------------------------------------------------
-    # 檢查目前的 group_id 是否存在於 Redis 的 'allowed_groups' 集合中
+    # 💡 確保這裡查的也是字串
     is_allowed = redis.sismember('allowed_groups', current_group_id)
     
+    # 💡 這裡加一個保險：如果 is_allowed 回傳的不是布林值而是數字 1 或 0 (Redis 特性)
+    if is_allowed == 1 or is_allowed is True:
+        is_allowed = True
+    else:
+        is_allowed = False
+
     if not is_allowed:
-        # ⚠️ 若群組未解鎖，當收到關鍵字指令時，提醒使用者要解鎖（若非指令就默默已讀不回）
+        # ⚠️ 若群組未解鎖，當收到關鍵字指令時，提醒使用者要解鎖
         if user_message.lower().startswith('/z ') or user_message.lower() == 'kb':
-            reply_text = "🔒 本群組尚未授權啟用。請聯繫管理員輸入解鎖指令：\n/unlock [您的密碼]"
+            reply_text = f"🔒 本群組尚未授權啟用。\n請聯繫管理員輸入解鎖指令。\n當前群組ID: {current_group_id}"
             send_reply(event, reply_text)
-    return
+        return
 
     # =========================================================
     # ➔ 以下為原本的王墓功能 (只有通過檢查的群組才能執行到這)
