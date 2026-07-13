@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 import pytz  # 用於處理台灣時區
 from flask import Flask, request, abort
-from dotenv import load_dotenv  # 💡 引入讀取 .env 的套件
+from dotenv import load_dotenv
+from upstash_redis import Redis  # 💡 引入 Upstash Redis 套件
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -16,26 +17,24 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-# 💡 在本地開發時，這行會自動尋找同資料夾底下的 .env 檔案並載入變數
-# 部署到 Vercel 後，這行不會影響 Vercel 後台設定好的 Environment Variables
 load_dotenv()
 
 app = Flask(__name__)
 
 # =========================================================
-# 📌 1. 改由 os.environ 讀取環境變數
-#    請確保你的 .env 檔案內名稱為：
-#    LINE_CHANNEL_SECRET=你的Secret
-#    LINE_CHANNEL_ACCESS_TOKEN=你的Token
+# 📌 1. 環境變數讀取 (已加上空字串防錯)
 # =========================================================
-CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
-CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
+CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', '')
+CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN', '')
+
+# 💡 初始化雲端 Redis 資料庫（會自動讀取環境變數中的 URL 與 TOKEN）
+redis = Redis.from_env()
 
 # 設定台灣時區
 TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 
 # =========================================================
-# 📌 2. 自訂怪物重生時間表（主資料庫：一律用「本名」當 Key）
+# 📌 2. 自訂怪物重生時間表
 # =========================================================
 BOSS_COOLDOWN = {
     "巴風特": 120,    # 2 小時
@@ -44,7 +43,7 @@ BOSS_COOLDOWN = {
 }
 
 # =========================================================
-# 📌 3. 怪物綽號對照表（綽號一律指向本名）
+# 📌 3. 怪物綽號對照表
 # =========================================================
 BOSS_ALIASES = {
     "山羊": "巴風特",
@@ -56,9 +55,6 @@ BOSS_ALIASES = {
 }
 
 DEFAULT_RESPAWN_MINUTES = 60  
-
-# 📌 4. 用于儲存 Boss 下次出生時間的紀錄 (記憶體儲存，統一存本名)
-BOSS_RECORDS = {}
 
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
@@ -76,7 +72,7 @@ def callback():
 
 @app.route("/", methods=['GET'])
 def home():
-    return "LINE Bot is running!"
+    return "LINE Bot is running with Redis!"
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -84,7 +80,7 @@ def handle_message(event):
     reply_text = None
     
     # ---------------------------------------------------------
-    # 功能 A: 輸入 /z 紀錄死亡時間 (支援補登時間、支援綽號轉換)
+    # 功能 A: 輸入 /z 紀錄死亡時間 (資料寫入 Redis)
     # ---------------------------------------------------------
     if user_message.lower().startswith('/z '):
         raw_content = user_message[3:].strip()
@@ -99,7 +95,6 @@ def handle_message(event):
             input_name = raw_content
             is_backfill = False
             
-            # 檢查最後一部分是否為 4 位數純數字 (時間補登)
             if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 4:
                 time_str = parts[1]
                 hour = int(time_str[:2])
@@ -110,7 +105,6 @@ def handle_message(event):
                     death_time = now_taiwan.replace(hour=hour, minute=minute, second=0, microsecond=0)
                     is_backfill = True
                     
-                    # 跨日智慧判斷
                     if (now_taiwan - death_time).total_seconds() > 43200:
                         if hour < 12 and now_taiwan.hour >= 12:
                             death_time = death_time + timedelta(days=1)
@@ -118,7 +112,6 @@ def handle_message(event):
                     reply_text = "❌ 時間格式錯誤！小時須小於24，分鐘須小於60。例如：1051"
             
             if not reply_text:
-                # 綽號轉換：查不到別名就用輸入的原名
                 real_name = BOSS_ALIASES.get(input_name.lower(), input_name)
                 
                 death_time_str = death_time.strftime('%Y-%m-%d %H:%M:%S')
@@ -127,8 +120,9 @@ def handle_message(event):
                 next_spawn_time = death_time + timedelta(minutes=cooldown_min)
                 next_spawn_str = next_spawn_time.strftime('%Y-%m-%d %H:%M:%S')
                 
-                # 統一以本名存入紀錄
-                BOSS_RECORDS[real_name] = next_spawn_time
+                # 💡 核心修改：將下次出生時間（時間戳記）存入 Redis 雜湊表
+                # 欄位名稱固定為 'boss_timer'，Key 是怪物本名，Value 是 ISO 時間字串
+                redis.hset('boss_timer', real_name, next_spawn_time.isoformat())
                 
                 backfill_tag = " (補登)" if is_backfill else ""
                 
@@ -141,42 +135,56 @@ def handle_message(event):
                 )
 
     # ---------------------------------------------------------
-    # 功能 B: 輸入 kb 顯示王墓看板列表 (新版日期下方條列格式)
+    # 功能 B: 輸入 kb 顯示王墓看板列表 (從 Redis 讀取資料)
     # ---------------------------------------------------------
     elif user_message.lower() == 'kb':
-        if not BOSS_RECORDS:
+        # 💡 核心修改：自 Redis 撈出所有 Boss 紀錄
+        all_records = redis.hgetall('boss_timer')
+        
+        if not all_records:
             reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
         else:
             date_groups = defaultdict(list)
+            boss_list_to_sort = []
             
-            # 對紀錄按時間先後排序
-            sorted_records = sorted(BOSS_RECORDS.items(), key=lambda x: x[1])
+            # 解析從 Redis 拿到的資料
+            for boss_name, time_iso_str in all_records.items():
+                # 從 ISO 字串還原成 datetime 物件
+                spawn_time = datetime.fromisoformat(time_iso_str)
+                
+                # 💡 自動過期機制：如果這隻王已經出生超過 24 小時，就不要顯示在看板上（選用，可不加）
+                if datetime.now(TAIWAN_TZ) - spawn_time > timedelta(hours=24):
+                    redis.hdel('boss_timer', boss_name) # 順便從資料庫刪除舊資料
+                    continue
+                    
+                boss_list_to_sort.append((boss_name, spawn_time))
             
-            for name, spawn_time in sorted_records:
-                date_key = spawn_time.strftime('%m/%d')
-                time_str = spawn_time.strftime('%H:%M:%S')
-                date_groups[date_key].append(f"➔ {name} ({time_str})")
-            
-            lines = ["📋 【BOSS 下次出生時間表】\n"]
-            for date_key, boss_list in date_groups.items():
-                lines.append(f"📅 {date_key}")
-                lines.append("\n".join(boss_list))
-                lines.append("") # 天與天之間空一行
-            
-            reply_text = "\n".join(lines).strip()
+            if not boss_list_to_sort:
+                reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
+            else:
+                # 對紀錄按時間先後排序
+                sorted_records = sorted(boss_list_to_sort, key=lambda x: x[1])
+                
+                for name, spawn_time in sorted_records:
+                    date_key = spawn_time.strftime('%m/%d')
+                    time_str = spawn_time.strftime('%H:%M:%S')
+                    date_groups[date_key].append(f"➔ {name} ({time_str})")
+                
+                lines = ["📋 【BOSS 下次出生時間表】\n"]
+                for date_key, boss_list in date_groups.items():
+                    lines.append(f"📅 {date_key}")
+                    lines.append("\n".join(boss_list))
+                    lines.append("")
+                
+                reply_text = "\n".join(lines).strip()
 
-    # ---------------------------------------------------------
     # 發送回覆訊息給 LINE
-    # ---------------------------------------------------------
     if reply_text:
         reply_content = TextMessage(text=reply_text)
         with ApiClient(configuration) as api_client:
             line_messaging_api = MessagingApi(api_client)
             line_messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[reply_content]
-                )
+                ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_content])
             )
 
 if __name__ == "__main__":

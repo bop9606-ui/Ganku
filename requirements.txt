@@ -2,3 +2,4 @@ Flask
 line-bot-sdk
 pytz
 python-dotenv
+upstash-redis
