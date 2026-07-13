@@ -107,7 +107,7 @@ def handle_message(event):
         if user_message.lower().startswith('/z ') or user_message.lower() == 'kb':
             reply_text = "🔒 本群組尚未授權啟用。請聯繫管理員輸入解鎖指令：\n/unlock [您的密碼]"
             send_reply(event, reply_text)
-        return
+    return
 
     # =========================================================
     # ➔ 以下為原本的王墓功能 (只有通過檢查的群組才能執行到這)
