@@ -76,7 +76,7 @@ BOSS_ALIASES = {
     "2": "飛龍2",
     "3": "飛龍3",
     "4": "飛龍4",
-    "87": "屠殺者莫莉", "茉莉": "屠杀者莫莉",
+    "87": "屠殺者莫莉", "茉莉": "屠殺者莫莉",
     "海賊": "海賊德雷克",
     "夫人": "巴爾博薩夫人",
     "卡王": "卡司特王",
@@ -93,7 +93,7 @@ BOSS_ALIASES = {
     "克": "克洛林",
     "鱷魚": "巨鱷",
     "巨人": "巨人",
-    "四色": "四色",
+    "四色": "四色", "4c": "四色",
 }
 
 DEFAULT_RESPAWN_MINUTES = 60  
@@ -154,7 +154,6 @@ def handle_message(event):
         is_allowed = False
 
     if not is_allowed:
-        # 配合去掉斜線，阻斷提示也同步更新為偵測 z 或是 kb
         if user_message.lower().startswith('z ') or user_message.lower() == 'kb':
             reply_text = f"🔒 本群組尚未授權啟用。\n請聯繫管理員輸入解鎖指令。\n當前群組ID: {current_group_id}"
             send_reply(event, reply_text)
@@ -164,9 +163,9 @@ def handle_message(event):
     # ➔ 以下為王墓功能 (包含自動輪空累加功能)
     # =========================================================
     
-    # 功能 A: 輸入 z 紀錄死亡時間 (已拿掉斜線、消日期時間超連結)
+    # 功能 A: 輸入 z 紀錄死亡時間 (新增：未來時間防呆、無此 BOSS、格式錯誤防呆)
     if user_message.lower().startswith('z '):
-        raw_content = user_message[2:].strip()  # 從第 2 個字元切（因為去掉斜線了）
+        raw_content = user_message[2:].strip()
         if not raw_content:
             reply_text = "❌ 請輸入正確格式，例如：\nz 巴風特\nz 巴風特 1051"
         else:
@@ -175,7 +174,9 @@ def handle_message(event):
             death_time = now_taiwan
             input_name = raw_content
             is_backfill = False
+            format_error = False
             
+            # 1. 嘗試解析補登時間格式 (4碼數字)
             if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 4:
                 time_str = parts[1]
                 hour, minute = int(time_str[:2]), int(time_str[2:])
@@ -183,32 +184,48 @@ def handle_message(event):
                     input_name = parts[0].strip()
                     death_time = now_taiwan.replace(hour=hour, minute=minute, second=0, microsecond=0)
                     is_backfill = True
+                    # 處理跨日邏輯
                     if (now_taiwan - death_time).total_seconds() > 43200:
                         if hour < 12 and now_taiwan.hour >= 12:
                             death_time = death_time + timedelta(days=1)
                 else:
-                    reply_text = "❌ 時間格式錯誤！"
+                    reply_text = "❌ 時間格式錯誤（時分超出範圍）！"
+                    format_error = True
             
-            if not reply_text:
+            # 💡 2. 未來時間防呆檢查 (死亡時間不能比當下的台灣時間還晚)
+            if not format_error and is_backfill:
+                # 容許 60 秒內的些微系統時間差
+                if death_time > now_taiwan + timedelta(seconds=60):
+                    reply_text = f"❌ 登記失敗：死亡時間 [{death_time.strftime('%H:%M')}] 不能超過當前未來時間！"
+                    format_error = True
+            
+            # 3. 嚴格檢查王名是否存在
+            if not format_error:
                 real_name = BOSS_ALIASES.get(input_name.lower(), input_name)
-                cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
-                next_spawn_time = death_time + timedelta(minutes=cooldown_min)
                 
-                redis_key = f"boss_timer:{current_group_id}"
-                redis.hset(redis_key, real_name, next_spawn_time.isoformat())
-                
-                # 💡 破解時間與日期超連結 (在冒號、斜線後塞入零寬度隱形字元)
-                death_time_str = death_time.strftime('%H:\u200b%M:\u200b%S')
-                next_spawn_str = next_spawn_time.strftime('%H:\u200b%M:\u200b%S')
-                next_spawn_date = next_spawn_time.strftime('%m/\u200b%d')
-                
-                backfill_tag = "(補登)" if is_backfill else ""
-                
-                reply_text = (
-                    f"👾[怪物名稱] {real_name}({cooldown_min}分){backfill_tag}\n"
-                    f"💀[死亡紀錄] {death_time_str}\n"
-                    f"✨[下次出生] {next_spawn_date} [{next_spawn_str}]"
-                )
+                # 如果查出來的真實名字不在 BOSS_COOLDOWN 字典裡，代表是非名單上的王或打錯字
+                if real_name not in BOSS_COOLDOWN:
+                    reply_text = f"❌ 找不到怪物【{input_name}】。\n請確認名稱是否正確，或此王非名單內 BOSS！"
+                else:
+                    # ✅ 只有格式正確、非未來時間、且是名單內的王，才進行計算並寫入 Redis 紀錄
+                    cooldown_min = BOSS_COOLDOWN[real_name]
+                    next_spawn_time = death_time + timedelta(minutes=cooldown_min)
+                    
+                    redis_key = f"boss_timer:{current_group_id}"
+                    redis.hset(redis_key, real_name, next_spawn_time.isoformat())
+                    
+                    # 破解時間與日期超連結
+                    death_time_str = death_time.strftime('%H:\u200b%M:\u200b%S')
+                    next_spawn_str = next_spawn_time.strftime('%H:\u200b%M:\u200b%S')
+                    next_spawn_date = next_spawn_time.strftime('%m/\u200b%d')
+                    
+                    backfill_tag = "(補登)" if is_backfill else ""
+                    
+                    reply_text = (
+                        f"👾[怪物名稱] {real_name}({cooldown_min}分){backfill_tag}\n"
+                        f"💀[死亡紀錄] {death_time_str}\n"
+                        f"✨[下次出生] {next_spawn_date} [{next_spawn_str}]"
+                    )
 
     # 功能 B: 輸入 kb 顯示王墓看板 (消日期時間超連結)
     elif user_message.lower() == 'kb':
@@ -252,7 +269,6 @@ def handle_message(event):
             else:
                 sorted_records = sorted(boss_list_to_sort, key=lambda x: x[1])
                 for name, spawn_time in sorted_records:
-                    # 💡 破解日期與時間超連結 (加入零寬度隱形字元)
                     date_key = spawn_time.strftime('%m/\u200b%d')
                     time_str = spawn_time.strftime('%H:\u200b%M:\u200b%S')
                     
