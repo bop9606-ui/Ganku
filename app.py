@@ -34,17 +34,66 @@ TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 UNLOCK_PASSWORD = "龍哥罩虎爺" 
 
 # =========================================================
-# 📌 2. BOSS 設定 (日後要新增 BOSS 改這裡即可)
+# 📌 2. BOSS 設定 (已完全匯入 25 隻完整清單、週期與綽號)
 # =========================================================
 BOSS_COOLDOWN = {
-    "巴風特": 120,    # 2 小時
-    "惡魔宰相": 60,   # 1 小時
-    "地獄犬": 45,     # 45 分鐘
+    # --- 240 分鐘系列 (4 小時) ---
+    "庫約": 240,
+    "殺戮者": 240,
+    "蜥蜴王": 240,
+    "飛龍1": 240,
+    "飛龍2": 240,
+    "飛龍3": 240,
+    "飛龍4": 240,
+    "屠殺者莫莉": 240,
+    "海賊德雷克": 240,
+    "巴爾博薩夫人": 240,
+    "卡司特王": 240,
+    "黑蛇騎士團麥肯": 240,
+    "尼羅德": 240,
+    "黑虎": 240,
+    "大腳": 240,
+    "奧杜亞": 240,
+    
+    # --- 480 分鐘系列 (8 小時) ---
+    "狼王": 480,
+    "頭目": 480,
+    "蛇女": 480,
+    "烏勒庫斯": 480,
+    "奈克偌斯": 480,
+    "克洛林": 480,
+    "巨鱷": 480,
+    
+    # --- 720 分鐘系列 (12 小時) ---
+    "巨人": 720,
+    "四色": 720,
 }
 
 BOSS_ALIASES = {
-    "山羊": "巴風特", "小巴": "巴風特", "baphomet": "巴風特",
-    "宰相": "惡魔宰相", "三頭犬": "地獄犬", "dog": "地獄犬"
+    "胖子": "殺戮者",
+    "ce": "蜥蜴王",
+    "1": "飛龍1",
+    "2": "飛龍2",
+    "3": "飛龍3",
+    "4": "飛龍4",
+    "87": "屠殺者莫莉", "茉莉": "屠殺者莫莉",
+    "海賊": "海賊德雷克",
+    "夫人": "巴爾博薩夫人",
+    "卡王": "卡司特王",
+    "麥肯": "黑蛇騎士團麥肯",
+    "尼": "尼羅德",
+    "虎": "黑虎",
+    "大腳": "大腳",
+    "奧": "奧杜亞",
+    "狼": "狼王",
+    "頭目": "頭目",
+    "蛇": "蛇女",
+    "烏": "烏勒庫斯",
+    "奈": "奈克偌斯",
+    "克": "克洛林",
+    "鱷魚": "巨鱷",
+    "巨人": "巨人",
+    "四色": "四色",
 }
 
 DEFAULT_RESPAWN_MINUTES = 60  
@@ -115,7 +164,7 @@ def handle_message(event):
     # ➔ 以下為王墓功能 (包含自動輪空累加功能)
     # =========================================================
     
-    # 功能 A: 輸入 /z 紀錄死亡時間
+    # 功能 A: 輸入 /z 紀錄死亡時間 (優化版：依序排列、消超連結、防換列)
     if user_message.lower().startswith('/z '):
         raw_content = user_message[3:].strip()
         if not raw_content:
@@ -148,16 +197,21 @@ def handle_message(event):
                 redis_key = f"boss_timer:{current_group_id}"
                 redis.hset(redis_key, real_name, next_spawn_time.isoformat())
                 
-                backfill_tag = " (補登)" if is_backfill else ""
+                # 💡 1. 破解時間超連結 (加入零寬度隱形字元)
+                death_time_str = death_time.strftime('%H:\u200b%M:\u200b%S')
+                next_spawn_str = next_spawn_time.strftime('%H:\u200b%M:\u200b%S')
+                next_spawn_date = next_spawn_time.strftime('%m/%d')
+                
+                backfill_tag = "(補登)" if is_backfill else ""
+                
+                # 💡 2. 按照【名稱 ➔ 死亡時間 ➔ 下一次出生】重新排列，緊湊無空格防換列
                 reply_text = (
-                    f"📝 【BOSS 死亡紀錄】\n"
-                    f"👾 怪物名稱：{real_name}\n"
-                    f"💀 死亡時間：{death_time.strftime('%Y-%m-%d %H:%M:%S')}{backfill_tag}\n"
-                    f"⏳ 重生冷卻：{cooldown_min} 分鐘\n"
-                    f"✨ 下次出生：{next_spawn_time.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"👾[怪物名稱] {real_name}({cooldown_min}分){backfill_tag}\n"
+                    f"💀[死亡紀錄] {death_time_str}\n"
+                    f"✨[下次出生] {next_spawn_date} [{next_spawn_str}]"
                 )
 
-    # 功能 B: 輸入 kb 顯示王墓看板 (時間置前、消超連結、防大字體換行優化版)
+    # 功能 B: 輸入 kb 顯示王墓看板 (優化版：時間置前、消超連結、防換列)
     elif user_message.lower() == 'kb':
         redis_key = f"boss_timer:{current_group_id}"
         all_records = redis.hgetall(redis_key)
@@ -196,7 +250,7 @@ def handle_message(event):
                 boss_list_to_sort.append((display_name, spawn_time))
             
             if not boss_list_to_sort:
-                reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
+                reply_text = "📋 目前沒有 any BOSS 的死亡紀錄喔！"
             else:
                 sorted_records = sorted(boss_list_to_sort, key=lambda x: x[1])
                 for name, spawn_time in sorted_records:
@@ -205,7 +259,7 @@ def handle_message(event):
                     # 💡 破解超連結：在冒號後面塞入零寬度隱形字元
                     time_str = spawn_time.strftime('%H:\u200b%M:\u200b%S')
                     
-                    # 💡 極致緊湊排版：時間直接移到最前面，拿掉所有空格防大字體換行
+                    # 💡 極致緊湊排版：時間移到最前面，拿掉所有空格防大字體換行
                     date_groups[date_key].append(f"➔[{time_str}]{name}")
                 
                 lines = ["📋 【BOSS 下次出生時間表】\n"]
@@ -218,7 +272,7 @@ def handle_message(event):
     if reply_text:
         send_reply(event, reply_text)
 
-# 发送 LINE 訊息的副程式
+# 發送 LINE 訊息的副程式
 def send_reply(event, text):
     reply_content = TextMessage(text=text)
     with ApiClient(configuration) as api_client:
