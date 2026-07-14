@@ -161,32 +161,63 @@ def handle_message(event):
                     f"✨ 下次出生：{next_spawn_time.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
-    # 功能 B: 輸入 kb 顯示王墓看板列表
+    # 功能 B: 輸入 kb 顯示王墓看板 (新增：逾時自動加算 CD 且統計輪空次數機制)
     elif user_message.lower() == 'kb':
         redis_key = f"boss_timer:{current_group_id}"
         all_records = redis.hgetall(redis_key)
         
         if not all_records:
-            reply_text = "📋 目前沒有 any BOSS 的死亡紀錄喔！"
+            reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
         else:
             date_groups = defaultdict(list)
             boss_list_to_sort = []
+            now_taiwan = datetime.now(TAIWAN_TZ)
+            has_updates = False  # 標記是否有王被自動順延
             
             for boss_name, time_iso_str in all_records.items():
                 spawn_time = datetime.fromisoformat(time_iso_str)
-                if datetime.now(TAIWAN_TZ) - spawn_time > timedelta(hours=24):
+                
+                # 1. 安全防護：如果是超過 24 小時的古老紀錄，直接清除
+                if now_taiwan - spawn_time > timedelta(hours=24):
                     redis.hdel(redis_key, boss_name)
                     continue
-                boss_list_to_sort.append((boss_name, spawn_time))
+                
+                # 💡 2. 核心機制：計算輪空次數
+                real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
+                cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
+                
+                skip_count = 0  # 每一隻王獨立計算輪空次數
+                while now_taiwan > spawn_time:
+                    spawn_time = spawn_time + timedelta(minutes=cooldown_min)
+                    skip_count += 1
+                    has_updates = True
+                
+                # 如果有發生時間變更，把新時間存回 Redis 覆蓋
+                if skip_count > 0:
+                    redis.hset(redis_key, boss_name, spawn_time.isoformat())
+                    # 把這隻王的顯示名稱後面加上 (輪空+次數)
+                    display_name = f"{boss_name} (輪空+{skip_count})"
+                else:
+                    display_name = boss_name
+                
+                boss_list_to_sort.append((display_name, spawn_time))
             
-            if not boss_list_to_sort:
+           if not boss_list_to_sort:
                 reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
             else:
+                # 依據更新後的時間由近到遠排序
                 sorted_records = sorted(boss_list_to_sort, key=lambda x: x[1])
                 for name, spawn_time in sorted_records:
                     date_key = spawn_time.strftime('%m/%d')
-                    time_str = spawn_time.strftime('%H:%M:%S')
-                    date_groups[date_key].append(f"➔ {name} ({time_str})")
+                    
+                    # 💡 1. 破解超連結：一樣加入零寬度隱形字元
+                    time_str = spawn_time.strftime('%H:\u200b%M:\u200b%S')
+                    
+                    # 💡 2. 緊湊排版優化：
+                    # 原本是：➔ {name} ({time_str}) 
+                    # 改成：➔ [{time_str}] {name}  (把時間拉到前面，且拿掉中間多餘空格)
+                    # 這樣就算名字太長換行，時間也絕對會在第一眼看清楚！
+                    date_groups[date_key].append(f"➔ [{time_str}]{name}")
                 
                 lines = ["📋 【BOSS 下次出生時間表】\n"]
                 for date_key, boss_list in date_groups.items():
