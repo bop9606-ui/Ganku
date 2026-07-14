@@ -34,7 +34,7 @@ TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 UNLOCK_PASSWORD = "龍哥罩虎爺" 
 
 # =========================================================
-# 📌 2. BOSS 設定 (已完全匯入 25 隻完整清單、週期與綽號)
+# 📌 2. BOSS 設定 (25 隻完整清單、週期與綽號)
 # =========================================================
 BOSS_COOLDOWN = {
     # --- 240 分鐘系列 (4 小時) ---
@@ -76,7 +76,7 @@ BOSS_ALIASES = {
     "2": "飛龍2",
     "3": "飛龍3",
     "4": "飛龍4",
-    "87": "屠殺者莫莉", "茉莉": "屠殺者莫莉",
+    "87": "屠殺者莫莉", "茉莉": "屠杀者莫莉",
     "海賊": "海賊德雷克",
     "夫人": "巴爾博薩夫人",
     "卡王": "卡司特王",
@@ -135,7 +135,6 @@ def handle_message(event):
     if user_message.startswith('/unlock '):
         input_pwd = user_message[8:].strip()
         if input_pwd == UNLOCK_PASSWORD:
-            # 將群組 ID 存入 Redis 的集合 (Set) 中
             redis.sadd('allowed_groups', current_group_id)
             reply_text = f"🔓 【系統通知】此群組已成功解鎖！\nID: {current_group_id}"
         else:
@@ -155,7 +154,8 @@ def handle_message(event):
         is_allowed = False
 
     if not is_allowed:
-        if user_message.lower().startswith('/z ') or user_message.lower() == 'kb':
+        # 配合去掉斜線，阻斷提示也同步更新為偵測 z 或是 kb
+        if user_message.lower().startswith('z ') or user_message.lower() == 'kb':
             reply_text = f"🔒 本群組尚未授權啟用。\n請聯繫管理員輸入解鎖指令。\n當前群組ID: {current_group_id}"
             send_reply(event, reply_text)
         return  # 只要沒解鎖一律在此攔截切斷
@@ -164,11 +164,11 @@ def handle_message(event):
     # ➔ 以下為王墓功能 (包含自動輪空累加功能)
     # =========================================================
     
-    # 功能 A: 輸入 /z 紀錄死亡時間 (優化版：依序排列、消超連結、防換列)
-    if user_message.lower().startswith('/z '):
-        raw_content = user_message[3:].strip()
+    # 功能 A: 輸入 z 紀錄死亡時間 (已拿掉斜線、消日期時間超連結)
+    if user_message.lower().startswith('z '):
+        raw_content = user_message[2:].strip()  # 從第 2 個字元切（因為去掉斜線了）
         if not raw_content:
-            reply_text = "❌ 請輸入正確格式，例如：\n/z 巴風特\n/z 巴風特 1051"
+            reply_text = "❌ 請輸入正確格式，例如：\nz 巴風特\nz 巴風特 1051"
         else:
             now_taiwan = datetime.now(TAIWAN_TZ)
             parts = raw_content.rsplit(maxsplit=1)
@@ -197,21 +197,20 @@ def handle_message(event):
                 redis_key = f"boss_timer:{current_group_id}"
                 redis.hset(redis_key, real_name, next_spawn_time.isoformat())
                 
-                # 💡 1. 破解時間超連結 (加入零寬度隱形字元)
+                # 💡 破解時間與日期超連結 (在冒號、斜線後塞入零寬度隱形字元)
                 death_time_str = death_time.strftime('%H:\u200b%M:\u200b%S')
                 next_spawn_str = next_spawn_time.strftime('%H:\u200b%M:\u200b%S')
-                next_spawn_date = next_spawn_time.strftime('%m/%d')
+                next_spawn_date = next_spawn_time.strftime('%m/\u200b%d')
                 
                 backfill_tag = "(補登)" if is_backfill else ""
                 
-                # 💡 2. 按照【名稱 ➔ 死亡時間 ➔ 下一次出生】重新排列，緊湊無空格防換列
                 reply_text = (
                     f"👾[怪物名稱] {real_name}({cooldown_min}分){backfill_tag}\n"
                     f"💀[死亡紀錄] {death_time_str}\n"
                     f"✨[下次出生] {next_spawn_date} [{next_spawn_str}]"
                 )
 
-    # 功能 B: 輸入 kb 顯示王墓看板 (優化版：時間置前、消超連結、防換列)
+    # 功能 B: 輸入 kb 顯示王墓看板 (消日期時間超連結)
     elif user_message.lower() == 'kb':
         redis_key = f"boss_timer:{current_group_id}"
         all_records = redis.hgetall(redis_key)
@@ -240,7 +239,6 @@ def handle_message(event):
                     spawn_time = spawn_time + timedelta(minutes=cooldown_min)
                     skip_count += 1
                 
-                # 如果有輪空，更新 Redis 時間，並加上標籤
                 if skip_count > 0:
                     redis.hset(redis_key, boss_name, spawn_time.isoformat())
                     display_name = f"{boss_name}(輪空+{skip_count})"
@@ -250,16 +248,14 @@ def handle_message(event):
                 boss_list_to_sort.append((display_name, spawn_time))
             
             if not boss_list_to_sort:
-                reply_text = "📋 目前沒有 any BOSS 的死亡紀錄喔！"
+                reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
             else:
                 sorted_records = sorted(boss_list_to_sort, key=lambda x: x[1])
                 for name, spawn_time in sorted_records:
-                    date_key = spawn_time.strftime('%m/%d')
-                    
-                    # 💡 破解超連結：在冒號後面塞入零寬度隱形字元
+                    # 💡 破解日期與時間超連結 (加入零寬度隱形字元)
+                    date_key = spawn_time.strftime('%m/\u200b%d')
                     time_str = spawn_time.strftime('%H:\u200b%M:\u200b%S')
                     
-                    # 💡 極致緊湊排版：時間移到最前面，拿掉所有空格防大字體換行
                     date_groups[date_key].append(f"➔[{time_str}]{name}")
                 
                 lines = ["📋 【BOSS 下次出生時間表】\n"]
