@@ -98,24 +98,21 @@ def handle_message(event):
     # ---------------------------------------------------------
     # 防護機制 C：檢查目前群組是否已解鎖
     # ---------------------------------------------------------
-    # 檢查目前的 group_id 是否存在於 Redis 的 'allowed_groups' 集合中
     is_allowed = redis.sismember('allowed_groups', current_group_id)
     
-    # 處理 Redis 回傳值可能是數字 1/0 或 布林值 的相容性檢查
     if is_allowed == 1 or is_allowed is True:
         is_allowed = True
     else:
         is_allowed = False
 
     if not is_allowed:
-        # ⚠️ 若群組未解鎖，當收到關鍵字指令時，提醒使用者要解鎖
         if user_message.lower().startswith('/z ') or user_message.lower() == 'kb':
             reply_text = f"🔒 本群組尚未授權啟用。\n請聯繫管理員輸入解鎖指令。\n當前群組ID: {current_group_id}"
             send_reply(event, reply_text)
         return  # 只要沒解鎖一律在此攔截切斷
 
     # =========================================================
-    # ➔ 以下為原本的王墓功能 (只有通過檢查的群組才能執行到這)
+    # ➔ 以下為王墓功能 (包含自動輪空累加功能)
     # =========================================================
     
     # 功能 A: 輸入 /z 紀錄死亡時間
@@ -148,7 +145,6 @@ def handle_message(event):
                 cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
                 next_spawn_time = death_time + timedelta(minutes=cooldown_min)
                 
-                # Redis 鍵名加上群組 ID，實現多群組數據獨立隔離
                 redis_key = f"boss_timer:{current_group_id}"
                 redis.hset(redis_key, real_name, next_spawn_time.isoformat())
                 
@@ -161,82 +157,4 @@ def handle_message(event):
                     f"✨ 下次出生：{next_spawn_time.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
-    # 功能 B: 輸入 kb 顯示王墓看板 (新增：逾時自動加算 CD 且統計輪空次數機制)
-    elif user_message.lower() == 'kb':
-        redis_key = f"boss_timer:{current_group_id}"
-        all_records = redis.hgetall(redis_key)
-        
-        if not all_records:
-            reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
-        else:
-            date_groups = defaultdict(list)
-            boss_list_to_sort = []
-            now_taiwan = datetime.now(TAIWAN_TZ)
-            has_updates = False  # 標記是否有王被自動順延
-            
-            for boss_name, time_iso_str in all_records.items():
-                spawn_time = datetime.fromisoformat(time_iso_str)
-                
-                # 1. 安全防護：如果是超過 24 小時的古老紀錄，直接清除
-                if now_taiwan - spawn_time > timedelta(hours=24):
-                    redis.hdel(redis_key, boss_name)
-                    continue
-                
-                # 💡 2. 核心機制：計算輪空次數
-                real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
-                cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
-                
-                skip_count = 0  # 每一隻王獨立計算輪空次數
-                while now_taiwan > spawn_time:
-                    spawn_time = spawn_time + timedelta(minutes=cooldown_min)
-                    skip_count += 1
-                    has_updates = True
-                
-                # 如果有發生時間變更，把新時間存回 Redis 覆蓋
-                if skip_count > 0:
-                    redis.hset(redis_key, boss_name, spawn_time.isoformat())
-                    # 把這隻王的顯示名稱後面加上 (輪空+次數)
-                    display_name = f"{boss_name} (輪空+{skip_count})"
-                else:
-                    display_name = boss_name
-                
-                boss_list_to_sort.append((display_name, spawn_time))
-            
-           if not boss_list_to_sort:
-                reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
-            else:
-                # 依據更新後的時間由近到遠排序
-                sorted_records = sorted(boss_list_to_sort, key=lambda x: x[1])
-                for name, spawn_time in sorted_records:
-                    date_key = spawn_time.strftime('%m/%d')
-                    
-                    # 💡 1. 破解超連結：一樣加入零寬度隱形字元
-                    time_str = spawn_time.strftime('%H:\u200b%M:\u200b%S')
-                    
-                    # 💡 2. 緊湊排版優化：
-                    # 原本是：➔ {name} ({time_str}) 
-                    # 改成：➔ [{time_str}] {name}  (把時間拉到前面，且拿掉中間多餘空格)
-                    # 這樣就算名字太長換行，時間也絕對會在第一眼看清楚！
-                    date_groups[date_key].append(f"➔ [{time_str}]{name}")
-                
-                lines = ["📋 【BOSS 下次出生時間表】\n"]
-                for date_key, boss_list in date_groups.items():
-                    lines.append(f"📅 {date_key}")
-                    lines.append("\n".join(boss_list))
-                    lines.append("")
-                reply_text = "\n".join(lines).strip()
-
-    if reply_text:
-        send_reply(event, reply_text)
-
-# 💡 抽出來的發送訊息副程式
-def send_reply(event, text):
-    reply_content = TextMessage(text=text)
-    with ApiClient(configuration) as api_client:
-        line_messaging_api = MessagingApi(api_client)
-        line_messaging_api.reply_message(
-            ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_content])
-        )
-
-if __name__ == "__main__":
-    app.run(port=5000)
+    # 功能 B: 輸入 kb 顯示王墓看板 (時間置前、消超連結、防大
