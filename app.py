@@ -157,4 +157,75 @@ def handle_message(event):
                     f"✨ 下次出生：{next_spawn_time.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
-    # 功能 B: 輸入 kb 顯示王墓看板 (時間置前、消超連結、防大
+    # 功能 B: 輸入 kb 顯示王墓看板 (時間置前、消超連結、防大字體換行優化版)
+    elif user_message.lower() == 'kb':
+        redis_key = f"boss_timer:{current_group_id}"
+        all_records = redis.hgetall(redis_key)
+        
+        if not all_records:
+            reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
+        else:
+            date_groups = defaultdict(list)
+            boss_list_to_sort = []
+            now_taiwan = datetime.now(TAIWAN_TZ)
+            
+            for boss_name, time_iso_str in all_records.items():
+                spawn_time = datetime.fromisoformat(time_iso_str)
+                
+                # 1. 移除超過 24 小時的舊紀錄
+                if now_taiwan - spawn_time > timedelta(hours=24):
+                    redis.hdel(redis_key, boss_name)
+                    continue
+                
+                # 2. 自動累加輪空次數機制
+                real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
+                cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
+                
+                skip_count = 0
+                while now_taiwan > spawn_time:
+                    spawn_time = spawn_time + timedelta(minutes=cooldown_min)
+                    skip_count += 1
+                
+                # 如果有輪空，更新 Redis 時間，並加上標籤
+                if skip_count > 0:
+                    redis.hset(redis_key, boss_name, spawn_time.isoformat())
+                    display_name = f"{boss_name}(輪空+{skip_count})"
+                else:
+                    display_name = boss_name
+                
+                boss_list_to_sort.append((display_name, spawn_time))
+            
+            if not boss_list_to_sort:
+                reply_text = "📋 目前沒有任何 BOSS 的死亡紀錄喔！"
+            else:
+                sorted_records = sorted(boss_list_to_sort, key=lambda x: x[1])
+                for name, spawn_time in sorted_records:
+                    date_key = spawn_time.strftime('%m/%d')
+                    
+                    # 💡 破解超連結：在冒號後面塞入零寬度隱形字元
+                    time_str = spawn_time.strftime('%H:\u200b%M:\u200b%S')
+                    
+                    # 💡 極致緊湊排版：時間直接移到最前面，拿掉所有空格防大字體換行
+                    date_groups[date_key].append(f"➔[{time_str}]{name}")
+                
+                lines = ["📋 【BOSS 下次出生時間表】\n"]
+                for date_key, boss_list in date_groups.items():
+                    lines.append(f"📅 {date_key}")
+                    lines.append("\n".join(boss_list))
+                    lines.append("")
+                reply_text = "\n".join(lines).strip()
+
+    if reply_text:
+        send_reply(event, reply_text)
+
+# 发送 LINE 訊息的副程式
+def send_reply(event, text):
+    reply_content = TextMessage(text=text)
+    with ApiClient(configuration) as api_client:
+        line_messaging_api = MessagingApi(api_client)
+        line_messaging_api.reply_message(
+            ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_content])
+        )
+
+if __name__ == "__main__":
+    app.run(port=5000)
