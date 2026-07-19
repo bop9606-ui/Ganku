@@ -242,8 +242,8 @@ def handle_message(event):
             for boss_name, time_iso_str in all_records.items():
                 spawn_time = datetime.fromisoformat(time_iso_str)
                 
-                # 1. 移除超過 24 小時的舊紀錄
-                if now_taiwan - spawn_time > timedelta(hours=24):
+                # 1. 移除超過 7 天的舊紀錄
+                if now_taiwan - spawn_time > timedelta(days=7):
                     redis.hdel(redis_key, boss_name)
                     continue
                 
