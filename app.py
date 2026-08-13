@@ -30,7 +30,7 @@ CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN', '')
 redis = Redis.from_env()
 TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 
-# 💡 【自訂解鎖金鑰】請確認這裡的密碼是你想設定的內容！
+# 💡 【自訂解鎖金鑰】
 UNLOCK_PASSWORD = "龍哥罩虎爺" 
 
 # =========================================================
@@ -127,7 +127,7 @@ def handle_message(event):
     if source_type != 'group':
         return
 
-    current_group_id = str(event.source.group_id)  # 強制轉成純字串，避免格式錯亂
+    current_group_id = str(event.source.group_id)
 
     # ---------------------------------------------------------
     # 防護機制 B：解鎖功能指令 (例如輸入: /unlock 龍哥罩虎爺)
@@ -141,7 +141,7 @@ def handle_message(event):
             reply_text = f"❌ 認證失敗：密碼錯誤。\n您輸入的密碼是：[{input_pwd}]"
         
         send_reply(event, reply_text)
-        return  # 攔截所有解鎖訊息
+        return
 
     # ---------------------------------------------------------
     # 防護機制 C：檢查目前群組是否已解鎖
@@ -154,17 +154,74 @@ def handle_message(event):
         is_allowed = False
 
     if not is_allowed:
-        if user_message.lower().startswith('z ') or user_message.lower() == 'kb':
+        if user_message.lower().startswith('z ') or user_message.lower() == 'kb' or user_message.lower().startswith('/reset'):
             reply_text = f"🔒 本群組尚未授權啟用。\n請聯繫管理員輸入解鎖指令。\n當前群組ID: {current_group_id}"
             send_reply(event, reply_text)
-        return  # 只要沒解鎖一律在此攔截切斷
+        return
 
     # =========================================================
-    # ➔ 以下為王墓功能 (包含自動輪空累加功能)
+    # ➔ 以下為王墓功能
     # =========================================================
     
-    # 功能 A: 輸入 z 紀錄死亡時間 (新增：未來時間防呆、無此 BOSS、格式錯誤防呆)
-    if user_message.lower().startswith('z '):
+    # 維修重置指令 /reset（僅重置已登記在王表上的王）
+    if user_message.lower().startswith('/reset'):
+        now_taiwan = datetime.now(TAIWAN_TZ)
+        param = user_message[6:].strip()
+        reset_base_time = now_taiwan
+        valid_reset = True
+        
+        # 解析 4 碼時間參數
+        if param:
+            if param.isdigit() and len(param) == 4:
+                hour, minute = int(param[:2]), int(param[2:])
+                if hour < 24 and minute < 60:
+                    reset_base_time = now_taiwan.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    
+                    # 跨日補登判斷
+                    if (now_taiwan - reset_base_time).total_seconds() > 43200:
+                        if hour < 12 and now_taiwan.hour >= 12:
+                            reset_base_time = reset_base_time + timedelta(days=1)
+                    
+                    # 未來時間防呆
+                    if reset_base_time > now_taiwan + timedelta(seconds=60):
+                        reply_text = f"❌ 重置失敗：指定開服時間 [{reset_base_time.strftime('%H:%M')}] 不能超過當前未來時間！"
+                        valid_reset = False
+                else:
+                    reply_text = "❌ 時間格式錯誤（時分超出範圍）！範例：/reset 1030"
+                    valid_reset = False
+            else:
+                reply_text = "❌ 格式錯誤！請輸入 `/reset` 或 `/reset 1030`（四碼數字時間）"
+                valid_reset = False
+
+        if valid_reset:
+            redis_key = f"boss_timer:{current_group_id}"
+            all_records = redis.hgetall(redis_key)
+            
+            if not all_records:
+                reply_text = "📋 目前王表上沒有任何已登記的 BOSS，無需重置喔！"
+            else:
+                updated_count = 0
+                # 💡 僅針對目前「已在王表紀錄中」的王，重新更新其下次出生時間
+                for boss_name in all_records.keys():
+                    real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
+                    cooldown = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
+                    
+                    next_spawn_time = reset_base_time + timedelta(minutes=cooldown)
+                    redis.hset(redis_key, boss_name, next_spawn_time.isoformat())
+                    updated_count += 1
+                
+                reset_time_str = reset_base_time.strftime('%H:\u200b%M:\u200b%S')
+                reset_date_str = reset_base_time.strftime('%m/\u200b%d')
+                
+                reply_text = (
+                    f"🔄 【維修重置完成】\n"
+                    f"已將目前王表上的 {updated_count} 隻 BOSS 死亡時間重置為開服時間：\n"
+                    f"📅 {reset_date_str} [{reset_time_str}]\n\n"
+                    f"請輸入 `kb` 即可查看重置後的完整時間表！"
+                )
+
+    # 功能 A: 輸入 z 紀錄死亡時間
+    elif user_message.lower().startswith('z '):
         raw_content = user_message[2:].strip()
         if not raw_content:
             reply_text = "❌ 請輸入正確格式，例如：\nz 巴風特\nz 巴風特 1051"
@@ -192,9 +249,8 @@ def handle_message(event):
                     reply_text = "❌ 時間格式錯誤（時分超出範圍）！"
                     format_error = True
             
-            # 💡 2. 未來時間防呆檢查 (死亡時間不能比當下的台灣時間還晚)
+            # 2. 未來時間防呆檢查
             if not format_error and is_backfill:
-                # 容許 60 秒內的些微系統時間差
                 if death_time > now_taiwan + timedelta(seconds=60):
                     reply_text = f"❌ 登記失敗：死亡時間 [{death_time.strftime('%H:%M')}] 不能超過當前未來時間！"
                     format_error = True
@@ -203,11 +259,9 @@ def handle_message(event):
             if not format_error:
                 real_name = BOSS_ALIASES.get(input_name.lower(), input_name)
                 
-                # 如果查出來的真實名字不在 BOSS_COOLDOWN 字典裡，代表是非名單上的王或打錯字
                 if real_name not in BOSS_COOLDOWN:
                     reply_text = f"❌ 找不到怪物【{input_name}】。\n請確認名稱是否正確，或此王非名單內 BOSS！"
                 else:
-                    # ✅ 只有格式正確、非未來時間、且是名單內的王，才進行計算並寫入 Redis 紀錄
                     cooldown_min = BOSS_COOLDOWN[real_name]
                     next_spawn_time = death_time + timedelta(minutes=cooldown_min)
                     
@@ -227,7 +281,7 @@ def handle_message(event):
                         f"✨[下次出生] {next_spawn_date} [{next_spawn_str}]"
                     )
 
-    # 功能 B: 輸入 kb 顯示王墓看板 (消日期時間超連結)
+    # 功能 B: 輸入 kb 顯示王墓看板
     elif user_message.lower() == 'kb':
         redis_key = f"boss_timer:{current_group_id}"
         all_records = redis.hgetall(redis_key)
@@ -242,12 +296,12 @@ def handle_message(event):
             for boss_name, time_iso_str in all_records.items():
                 spawn_time = datetime.fromisoformat(time_iso_str)
                 
-                # 1. 移除超過 7 天的舊紀錄
+                # 過期記錄清除機制：超過 7 天 (168 小時) 沒更新則自動刪除
                 if now_taiwan - spawn_time > timedelta(days=7):
                     redis.hdel(redis_key, boss_name)
                     continue
                 
-                # 2. 自動累加輪空次數機制
+                # 自動累加輪空次數機制
                 real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
                 cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
                 
