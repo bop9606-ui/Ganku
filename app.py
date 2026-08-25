@@ -158,7 +158,8 @@ def handle_message(event):
             user_message.lower() == 'kb' or 
             user_message.lower().startswith('/reset') or
             user_message.lower() == '/speed' or
-            user_message.lower() == '/re'):
+            user_message.lower() == '/re' or
+            user_message.lower() == '/help'):
             reply_text = f"🔒 本群組尚未授權啟用。\n請聯繫管理員輸入解鎖指令。\n當前群組ID: {current_group_id}"
             send_reply(event, reply_text)
         return
@@ -170,8 +171,29 @@ def handle_message(event):
     speed_mode_key = f"speed_mode:{current_group_id}"
     is_speed_mode = redis.get(speed_mode_key) == "1"
 
-    # 新增功能：/speed 週期減半
-    if user_message.lower() == '/speed':
+    # 新增功能：/help 顯示指令說明表
+    if user_message.lower() == '/help':
+        reply_text = (
+            "📖 【王墓報時 Bot 指令說明表】\n"
+            "─────────────\n"
+            "📌 基礎查詢與登記：\n"
+            "• `kb` : 顯示目前已登記 BOSS 的出生時間表\n"
+            "• `z 王名` : 登記當下時間為 BOSS 死亡時間\n"
+            "  └ 例：`z 狼王` 或 `z 狼` (支援簡稱)\n"
+            "• `z 王名 時間` : 補登過去特定時間點死亡\n"
+            "  └ 例：`z 狼王 1030` (補登 10:30 擊殺)\n\n"
+            "🔄 維修與重置：\n"
+            "• `/reset` : 以當下時間，重置王表上 BOSS 出生時間\n"
+            "• `/reset 時間` : 指定開服時間重置出生時間\n"
+            "  └ 例：`/reset 1030` (以今天 10:30 為基準重置)\n\n"
+            "⚡ 週期調整：\n"
+            "• `/speed` : 開啟減半模式 (所有 BOSS 冷卻時間變 50%)\n"
+            "• `/re` : 恢復正常模式 (恢復預設 100% 冷卻時間)\n\n"
+            "💡 備註：記錄超過 7 天完全未更新將自動清除。"
+        )
+
+    # 功能：/speed 週期減半
+    elif user_message.lower() == '/speed':
         if is_speed_mode:
             reply_text = "⚡ 目前已經是【週期減半模式】中囉！"
         else:
@@ -197,7 +219,7 @@ def handle_message(event):
                     
             reply_text = "⚡【週期減半模式已開啟】\n所有 BOSS 刷新時間減半（50%）！\n請輸入 `kb` 查看調整後的重生時間。"
 
-    # 新增功能：/re 復原正常週期
+    # 功能：/re 復原正常週期
     elif user_message.lower() == '/re':
         if not is_speed_mode:
             reply_text = "🔄 目前已經是【正常週期模式】囉！"
