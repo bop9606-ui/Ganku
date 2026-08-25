@@ -154,7 +154,11 @@ def handle_message(event):
         is_allowed = False
 
     if not is_allowed:
-        if user_message.lower().startswith('z ') or user_message.lower() == 'kb' or user_message.lower().startswith('/reset'):
+        if (user_message.lower().startswith('z ') or 
+            user_message.lower() == 'kb' or 
+            user_message.lower().startswith('/reset') or
+            user_message.lower() == '/speed' or
+            user_message.lower() == '/re'):
             reply_text = f"🔒 本群組尚未授權啟用。\n請聯繫管理員輸入解鎖指令。\n當前群組ID: {current_group_id}"
             send_reply(event, reply_text)
         return
@@ -163,8 +167,46 @@ def handle_message(event):
     # ➔ 以下為王墓功能
     # =========================================================
     
+    speed_mode_key = f"speed_mode:{current_group_id}"
+    is_speed_mode = redis.get(speed_mode_key) == "1"
+
+    # 新增功能：/speed 週期減半
+    if user_message.lower() == '/speed':
+        if is_speed_mode:
+            reply_text = "⚡ 目前已經是【週期減半模式】中囉！"
+        else:
+            redis.set(speed_mode_key, "1")
+            redis_key = f"boss_timer:{current_group_id}"
+            all_records = redis.hgetall(redis_key)
+            now_taiwan = datetime.now(TAIWAN_TZ)
+            
+            # 將現有王表上的王，距離下一次出生的剩餘時間砍半
+            if all_records:
+                for boss_name, time_iso_str in all_records.items():
+                    spawn_time = datetime.fromisoformat(time_iso_str)
+                    remaining = (spawn_time - now_taiwan).total_seconds()
+                    
+                    if remaining > 0:
+                        new_spawn_time = now_taiwan + timedelta(seconds=remaining / 2)
+                    else:
+                        real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
+                        cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES) / 2
+                        new_spawn_time = spawn_time + timedelta(minutes=cooldown_min)
+                        
+                    redis.hset(redis_key, boss_name, new_spawn_time.isoformat())
+                    
+            reply_text = "⚡【週期減半模式已開啟】\n所有 BOSS 刷新時間減半（50%）！\n請輸入 `kb` 查看調整後的重生時間。"
+
+    # 新增功能：/re 復原正常週期
+    elif user_message.lower() == '/re':
+        if not is_speed_mode:
+            reply_text = "🔄 目前已經是【正常週期模式】囉！"
+        else:
+            redis.delete(speed_mode_key)
+            reply_text = "🔄【已恢復正常週期模式】\n之後登記的 BOSS 將恢復預設冷卻時間。"
+
     # 維修重置指令 /reset（僅重置已登記在王表上的王）
-    if user_message.lower().startswith('/reset'):
+    elif user_message.lower().startswith('/reset'):
         now_taiwan = datetime.now(TAIWAN_TZ)
         param = user_message[6:].strip()
         reset_base_time = now_taiwan
@@ -201,10 +243,11 @@ def handle_message(event):
                 reply_text = "📋 目前王表上沒有任何已登記的 BOSS，無需重置喔！"
             else:
                 updated_count = 0
-                # 💡 僅針對目前「已在王表紀錄中」的王，重新更新其下次出生時間
                 for boss_name in all_records.keys():
                     real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
                     cooldown = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
+                    if is_speed_mode:
+                        cooldown /= 2
                     
                     next_spawn_time = reset_base_time + timedelta(minutes=cooldown)
                     redis.hset(redis_key, boss_name, next_spawn_time.isoformat())
@@ -212,9 +255,10 @@ def handle_message(event):
                 
                 reset_time_str = reset_base_time.strftime('%H:\u200b%M:\u200b%S')
                 reset_date_str = reset_base_time.strftime('%m/\u200b%d')
+                speed_tag = " (⚡減半模式中)" if is_speed_mode else ""
                 
                 reply_text = (
-                    f"🔄 【維修重置完成】\n"
+                    f"🔄 【維修重置完成】{speed_tag}\n"
                     f"已將目前王表上的 {updated_count} 隻 BOSS 死亡時間重置為開服時間：\n"
                     f"📅 {reset_date_str} [{reset_time_str}]\n\n"
                     f"請輸入 `kb` 即可查看重置後的完整時間表！"
@@ -263,6 +307,9 @@ def handle_message(event):
                     reply_text = f"❌ 找不到怪物【{input_name}】。\n請確認名稱是否正確，或此王非名單內 BOSS！"
                 else:
                     cooldown_min = BOSS_COOLDOWN[real_name]
+                    if is_speed_mode:
+                        cooldown_min /= 2  # 加速模式週期減半
+                        
                     next_spawn_time = death_time + timedelta(minutes=cooldown_min)
                     
                     redis_key = f"boss_timer:{current_group_id}"
@@ -274,9 +321,10 @@ def handle_message(event):
                     next_spawn_date = next_spawn_time.strftime('%m/\u200b%d')
                     
                     backfill_tag = "(補登)" if is_backfill else ""
+                    speed_tag = "⚡" if is_speed_mode else ""
                     
                     reply_text = (
-                        f"👾[怪物名稱] {real_name}({cooldown_min}分){backfill_tag}\n"
+                        f"👾[怪物名稱] {real_name}({int(cooldown_min)}分){speed_tag}{backfill_tag}\n"
                         f"💀[死亡紀錄] {death_time_str}\n"
                         f"✨[下次出生] {next_spawn_date} [{next_spawn_str}]"
                     )
@@ -304,6 +352,8 @@ def handle_message(event):
                 # 自動累加輪空次數機制
                 real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
                 cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
+                if is_speed_mode:
+                    cooldown_min /= 2
                 
                 skip_count = 0
                 while now_taiwan > spawn_time:
@@ -328,7 +378,8 @@ def handle_message(event):
                     
                     date_groups[date_key].append(f"➔[{time_str}]{name}")
                 
-                lines = ["📋 【BOSS 下次出生時間表】\n"]
+                header_mode = "⚡【BOSS 下次出生時間表 (減半模式)】\n" if is_speed_mode else "📋 【BOSS 下次出生時間表】\n"
+                lines = [header_mode]
                 for date_key, boss_list in date_groups.items():
                     lines.append(f"📅 {date_key}")
                     lines.append("\n".join(boss_list))
