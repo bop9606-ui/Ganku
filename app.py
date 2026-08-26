@@ -69,6 +69,9 @@ BOSS_COOLDOWN = {
     "四色": 720,
 }
 
+# 不受 /speed 減半影響的 BOSS 特殊清單
+EXCLUDE_FROM_SPEED = {"四色"}
+
 BOSS_ALIASES = {
     "胖子": "殺戮者",
     "ce": "蜥蜴王",
@@ -171,7 +174,7 @@ def handle_message(event):
     speed_mode_key = f"speed_mode:{current_group_id}"
     is_speed_mode = redis.get(speed_mode_key) == "1"
 
-    # 新增功能：/help 顯示指令說明表
+    # 功能：/help 顯示指令說明表
     if user_message.lower() == '/help':
         reply_text = (
             "📖 【王墓報時 Bot 指令說明表】\n"
@@ -187,12 +190,12 @@ def handle_message(event):
             "• `/reset 時間` : 指定開服時間重置出生時間\n"
             "  └ 例：`/reset 1030` (以今天 10:30 為基準重置)\n\n"
             "⚡ 週期調整：\n"
-            "• `/speed` : 開啟減半模式 (所有 BOSS 冷卻時間變 50%)\n"
+            "• `/speed` : 開啟減半模式 (除「四色」外，冷卻變 50%)\n"
             "• `/re` : 恢復正常模式 (恢復預設 100% 冷卻時間)\n\n"
             "💡 備註：記錄超過 7 天完全未更新將自動清除。"
         )
 
-    # 功能：/speed 週期減半
+    # 功能：/speed 週期減半 (排除四色)
     elif user_message.lower() == '/speed':
         if is_speed_mode:
             reply_text = "⚡ 目前已經是【週期減半模式】中囉！"
@@ -202,22 +205,26 @@ def handle_message(event):
             all_records = redis.hgetall(redis_key)
             now_taiwan = datetime.now(TAIWAN_TZ)
             
-            # 將現有王表上的王，距離下一次出生的剩餘時間砍半
             if all_records:
                 for boss_name, time_iso_str in all_records.items():
+                    real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
+                    
+                    # 若為四色，則不調整其時間
+                    if real_name in EXCLUDE_FROM_SPEED:
+                        continue
+                        
                     spawn_time = datetime.fromisoformat(time_iso_str)
                     remaining = (spawn_time - now_taiwan).total_seconds()
                     
                     if remaining > 0:
                         new_spawn_time = now_taiwan + timedelta(seconds=remaining / 2)
                     else:
-                        real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
                         cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES) / 2
                         new_spawn_time = spawn_time + timedelta(minutes=cooldown_min)
                         
                     redis.hset(redis_key, boss_name, new_spawn_time.isoformat())
                     
-            reply_text = "⚡【週期減半模式已開啟】\n所有 BOSS 刷新時間減半（50%）！\n請輸入 `kb` 查看調整後的重生時間。"
+            reply_text = "⚡【週期減半模式已開啟】\nBOSS 刷新時間減半（四色維持固定週期）！\n請輸入 `kb` 查看調整後的重生時間。"
 
     # 功能：/re 復原正常週期
     elif user_message.lower() == '/re':
@@ -268,7 +275,9 @@ def handle_message(event):
                 for boss_name in all_records.keys():
                     real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
                     cooldown = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
-                    if is_speed_mode:
+                    
+                    # 若在減半模式下，且該王不在排除名單，才減半
+                    if is_speed_mode and real_name not in EXCLUDE_FROM_SPEED:
                         cooldown /= 2
                     
                     next_spawn_time = reset_base_time + timedelta(minutes=cooldown)
@@ -329,8 +338,9 @@ def handle_message(event):
                     reply_text = f"❌ 找不到怪物【{input_name}】。\n請確認名稱是否正確，或此王非名單內 BOSS！"
                 else:
                     cooldown_min = BOSS_COOLDOWN[real_name]
-                    if is_speed_mode:
-                        cooldown_min /= 2  # 加速模式週期減半
+                    # 四色排除減半
+                    if is_speed_mode and real_name not in EXCLUDE_FROM_SPEED:
+                        cooldown_min /= 2
                         
                     next_spawn_time = death_time + timedelta(minutes=cooldown_min)
                     
@@ -343,7 +353,7 @@ def handle_message(event):
                     next_spawn_date = next_spawn_time.strftime('%m/\u200b%d')
                     
                     backfill_tag = "(補登)" if is_backfill else ""
-                    speed_tag = "⚡" if is_speed_mode else ""
+                    speed_tag = "⚡" if (is_speed_mode and real_name not in EXCLUDE_FROM_SPEED) else ""
                     
                     reply_text = (
                         f"👾[怪物名稱] {real_name}({int(cooldown_min)}分){speed_tag}{backfill_tag}\n"
@@ -374,7 +384,7 @@ def handle_message(event):
                 # 自動累加輪空次數機制
                 real_name = BOSS_ALIASES.get(boss_name.lower(), boss_name)
                 cooldown_min = BOSS_COOLDOWN.get(real_name, DEFAULT_RESPAWN_MINUTES)
-                if is_speed_mode:
+                if is_speed_mode and real_name not in EXCLUDE_FROM_SPEED:
                     cooldown_min /= 2
                 
                 skip_count = 0
